@@ -119,19 +119,22 @@ def check_card(card_data):
         cart_id = id_match.group(1)
         cart_md5 = md5_match.group(1)
 
-        headers_stripe = {'accept': 'application/json', 'content-type': 'application/x-www-form-urlencoded', 'user-agent': ua}
-        data_stripe = {
-            'type': 'card', 'card[number]': cc_num, 'card[cvc]': cc_cvv, 'card[exp_month]': cc_month,
-            'card[exp_year]': cc_year[2:], 'guid': str(uuid.uuid4()), 'muid': str(uuid.uuid4()), 'sid': str(uuid.uuid4()),
-            'payment_user_agent': 'stripe.js/e1fb22ad35', 'key': STRIPE_PK, '_stripe_account': STRIPE_ACC,
-        }
-        resp_stripe = session.post('https://api.stripe.com/v1/payment_methods', headers=headers_stripe, data=data_stripe, timeout=20)
-        
-        if resp_stripe.status_code != 200:
-            err = resp_stripe.json().get('error', {}).get('message', 'Erro Stripe')
-            return f"❌ Reprovado (Stripe) -> {err}"
-
-        pm_id = resp_stripe.json().get('id')
+        # headers_stripe = {
+        #     'accept': 'application/json',
+        #     'content-type': 'application/x-www-form-urlencoded',
+        #     'user-agent': ua
+        # }
+        # data_stripe = {
+        #     'type': 'card', 'card[number]': cc_num, 'card[cvc]': cc_cvv, 'card[exp_month]': cc_month,
+        #     'card[exp_year]': cc_year[2:], 'guid': str(uuid.uuid4()), 'muid': str(uuid.uuid4()), 'sid': str(uuid.uuid4()),
+        #     'payment_user_agent': 'stripe.js/e1fb22ad35', 'key': STRIPE_PK, '_stripe_account': STRIPE_ACC,
+        # }
+        # resp_stripe = session.post('https://api.stripe.com/v1/payment_methods', headers=headers_stripe, data=data_stripe, timeout=20)
+        # A tokenização direta com a chave publicável do Stripe a partir do servidor não é permitida.
+        # Para resolver isso, você precisará implementar uma das soluções descritas no README.md.
+        # Por enquanto, estamos retornando um erro para evitar que o bot continue.
+        return "❌ Reprovado (Stripe) -> This integration surface is unsupported for publishable key tokenization. Consulte o README.md para soluções." 
+        # pm_id = resp_stripe.json().get('id') # Comentado, pois a tokenização acima foi desabilitada.
 
         payload_val = {
             "payment_method_id": pm_id, "cart_id": cart_id, "cart_md5": cart_md5,
@@ -201,5 +204,4 @@ if __name__ == "__main__":
     print("Bot iniciado com verificação de grupo...")
     bot.infinity_polling()
 
-    bot.infinity_polling()
 
