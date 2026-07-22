@@ -1,4 +1,5 @@
 import telebot
+from telebot import types
 import requests
 import json
 import time
@@ -6,15 +7,21 @@ import re
 import uuid
 import random
 import os
+import threading
+from flask import Flask, request
 from urllib.parse import urlparse, parse_qs
 
 # ==============================================================================
-#  OMPLACE CHECKER - TELEGRAM BOT VERSION
+#  OMPLACE CHECKER - TELEGRAM BOT (WEBHOOK VERSION FOR RAILWAY)
 # ==============================================================================
+
+# --- FLASK APP ---
+app = Flask(__name__)
 
 # --- CONFIGURAÇÕES DO BOT ---
 TOKEN = os.getenv("TELEGRAM_TOKEN", "8806372148:AAG5KvpIAcO97IM-A00DfznguWu5eQ5qGp0")
-bot = telebot.TeleBot(TOKEN)
+URL = os.getenv("WEBAPP_URL", "https://your-railway-url.railway.app")
+bot = telebot.TeleBot(TOKEN, threaded=False)
 
 # --- CONFIGURAÇÃO DO GRUPO OBRIGATÓRIO ---
 CHANNEL_ID = "@DONATESCUENTAS" 
@@ -301,7 +308,6 @@ def check_card_vbv(card_data):
     proxy_ip = proxy_raw.split(':')[0]
 
     try:
-        # Usando requests normais com proxy (curl_cffi não disponível no bot)
         session = requests.Session()
         session.proxies = proxy
 
@@ -382,7 +388,6 @@ def check_card_vbv(card_data):
         time.sleep(5)
 
         is_approved = False
-        reason = "DECLINED"
         page_content = ""
         try:
             page_content = resp_final.text if resp_final else resp_pay.text
@@ -392,12 +397,8 @@ def check_card_vbv(card_data):
         # Lógica de detecção
         if "statusCode=SUCCESS" in final_url and "/waiting" not in final_url:
             is_approved = True
-            reason = "LIVE"
-        
         elif "/waiting" in final_url and "statusCode=SUCCESS" in final_url:
             is_approved = False
-            reason = "DECLINED"
-
         else:
             has_bank_in_history = any(any(domain in url for domain in VBV_BANK_DOMAINS) for url in all_urls)
             has_bank_in_content = any(domain in page_content for domain in VBV_BANK_DOMAINS)
@@ -405,18 +406,14 @@ def check_card_vbv(card_data):
             if "secure.payu.com" in final_url and "threeds" in final_url:
                 if ("3D Secure 2" in page_content or "threeds" in page_content.lower()) and (has_bank_in_history or has_bank_in_content):
                     is_approved = True
-                    reason = "LIVE"
                 else:
                     is_approved = False
-                    reason = "DECLINED"
             
             elif any(domain in final_url for domain in VBV_BANK_DOMAINS):
                 is_approved = True
-                reason = "LIVE"
             
             else:
                 is_approved = False
-                reason = "DECLINED"
 
         if is_approved:
             return f"✅ LIVE ➔ {cc_num}"
@@ -428,7 +425,43 @@ def check_card_vbv(card_data):
 
 
 # ==============================================================================
-#  HANDLERS DO TELEGRAM BOT
+#  PROCESSA CARTÕES EM BACKGROUND (THREAD)
+# ==============================================================================
+def process_stripe_background(chat_id, message_id, cards, initial_msg_id):
+    """Processa cartões Stripe em background e edita a mensagem"""
+    results = []
+    for i, card in enumerate(cards):
+        if not card.strip(): continue
+        res = check_card_stripe(card)
+        results.append(f"💳 `{card.strip()}`\nResult: {res}")
+        
+        if (i + 1) % 2 == 0 or (i + 1) == len(cards):
+            full_res = "📊 **Resultados (STRIPE):**\n\n" + "\n\n".join(results)
+            try:
+                bot.edit_message_text(full_res, chat_id, initial_msg_id, parse_mode="Markdown")
+            except:
+                pass
+        time.sleep(2)
+
+def process_vbv_background(chat_id, message_id, cards, initial_msg_id):
+    """Processa cartões VBV em background e edita a mensagem"""
+    results = []
+    for i, card in enumerate(cards):
+        if not card.strip(): continue
+        res = check_card_vbv(card)
+        results.append(f"💳 `{card.strip()}`\nResult: {res}")
+        
+        if (i + 1) % 2 == 0 or (i + 1) == len(cards):
+            full_res = "📊 **Resultados (VBV/PayU):**\n\n" + "\n\n".join(results)
+            try:
+                bot.edit_message_text(full_res, chat_id, initial_msg_id, parse_mode="Markdown")
+            except:
+                pass
+        time.sleep(2)
+
+
+# ==============================================================================
+#  HANDLERS DO TELEGRAM BOT (WEBHOOK)
 # ==============================================================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -457,19 +490,12 @@ def stripe_cards(message):
     cards = msg_text.split('\n')
     status_msg = bot.reply_to(message, f"⏳ Processando {len(cards)} cartões via **Stripe**...", parse_mode="Markdown")
     
-    results = []
-    for i, card in enumerate(cards):
-        if not card.strip(): continue
-        res = check_card_stripe(card)
-        results.append(f"💳 `{card.strip()}`\nResult: {res}")
-        
-        if (i + 1) % 2 == 0 or (i + 1) == len(cards):
-            full_res = "📊 **Resultados (STRIPE):**\n\n" + "\n\n".join(results)
-            try:
-                bot.edit_message_text(full_res, message.chat.id, status_msg.message_id, parse_mode="Markdown")
-            except:
-                pass
-        time.sleep(2)
+    # Processa em background para não bloquear o webhook
+    thread = threading.Thread(
+        target=process_stripe_background,
+        args=(message.chat.id, message.message_id, cards, status_msg.message_id)
+    )
+    thread.start()
 
 @bot.message_handler(commands=['vbv'])
 def vbv_cards(message):
@@ -485,19 +511,12 @@ def vbv_cards(message):
     cards = msg_text.split('\n')
     status_msg = bot.reply_to(message, f"⏳ Processando {len(cards)} cartões via **VBV/PayU**...", parse_mode="Markdown")
     
-    results = []
-    for i, card in enumerate(cards):
-        if not card.strip(): continue
-        res = check_card_vbv(card)
-        results.append(f"💳 `{card.strip()}`\nResult: {res}")
-        
-        if (i + 1) % 2 == 0 or (i + 1) == len(cards):
-            full_res = "📊 **Resultados (VBV/PayU):**\n\n" + "\n\n".join(results)
-            try:
-                bot.edit_message_text(full_res, message.chat.id, status_msg.message_id, parse_mode="Markdown")
-            except:
-                pass
-        time.sleep(2)
+    # Processa em background para não bloquear o webhook
+    thread = threading.Thread(
+        target=process_vbv_background,
+        args=(message.chat.id, message.message_id, cards, status_msg.message_id)
+    )
+    thread.start()
 
 @bot.message_handler(commands=['chk'])
 def chk_cards(message):
@@ -517,9 +536,32 @@ def auto_chk(message):
         message.text = f"/stripe {msg_text}"
         stripe_cards(message)
 
+
+# ==============================================================================
+#  FLASK WEBHOOK ROUTE
+# ==============================================================================
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    update = types.Update.de_json(request.stream.read().decode("utf-8"), bot)
+    bot.process_new_updates([update])
+    return '', 200
+
+@app.route('/')
+def health():
+    return "Bot OMPLACE Online 🚀"
+
+
 # ==============================================================================
 #  MAIN
 # ==============================================================================
 if __name__ == "__main__":
-    print("Bot iniciado com comandos /stripe e /vbv + rotação de proxies...")
-    bot.infinity_polling()
+    # Deleta webhook anterior (caso exista) e configura novo
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(url=f"{URL}/{TOKEN}")
+    print("Bot iniciado com webhook em Railway...")
+    print(f"Webhook URL: {URL}/{TOKEN}")
+    
+    # Roda Flask para receber webhooks
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=False)
